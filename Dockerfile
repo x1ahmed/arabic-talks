@@ -1,67 +1,123 @@
 FROM debian:stable-slim
 
-# تثبيت الأدوات الأساسية وسيرفر Nginx للتمويه
+# تثبيت الأدوات الأساسية وخادم Caddy للتمويه
 RUN apt-get update && apt-get install -y \
     curl \
     unzip \
     ca-certificates \
     bash \
-    nginx \
+    tar \
     && rm -rf /var/lib/apt/lists/*
 
-# تحميل النواة وتغيير اسم البرنامج إلى اسم تمويهي (web-engine)
-RUN bash -c "curl -L https://github.com/XTLS/Xray-core/releases/latest/download/Xray-linux-64.zip -o engine.zip && \
-    unzip engine.zip && \
-    mv xray /usr/local/bin/web-engine && \
-    chmod +x /usr/local/bin/web-engine && \
-    rm -rf engine.zip geoip.dat geosite.dat README.md LICENSE"
+# تحميل وتثبيت Xray-core
+RUN bash -c "curl -L https://github.com/XTLS/Xray-core/releases/latest/download/Xray-linux-64.zip -o xray.zip && \
+    unzip xray.zip && \
+    mv xray /usr/local/bin/ && \
+    chmod +x /usr/local/bin/xray && \
+    rm -rf xray.zip"
 
-# المتغيرات الافتراضية بأسماء ومسارات تمويهية
+# تحميل وتثبيت خادم Caddy التمويهي
+RUN bash -c "curl -sL 'https://github.com/caddyserver/caddy/releases/download/v2.8.4/caddy_2.8.4_linux_amd64.tar.gz' | tar -xz -C /usr/local/bin caddy && \
+    chmod +x /usr/local/bin/caddy"
+
+# المتغيرات الافتراضية (مسار مخفي يظهر كأنه API)
 ENV UUID=8442ff27-8e79-4f27-b4d2-c3e6447789ea
-ENV WS_PATH=/api/v3/telemetry
+ENV WS_PATH=/api/v3/telemetry/stream
 ENV PORT=8080
+ENV SNI=gpubgm.com
 
-# بناء سكربت التشغيل التمويهي
-RUN echo '#!/bin/bash' > /start.sh && \
-    echo 'DOMAIN=${RAILWAY_PUBLIC_DOMAIN:-"your-app.up.railway.app"}' >> /start.sh && \
-    # 1. إعداد Nginx كواجهة تمويهية
-    echo 'cat << EOF > /etc/nginx/sites-available/default' >> /start.sh && \
-    echo 'server {' >> /start.sh && \
-    echo '    listen ${PORT};' >> /start.sh && \
-    echo '    server_name _;' >> /start.sh && \
-    echo '    location / {' >> /start.sh && \
-    echo '        default_type application/json;' >> /start.sh && \
-    echo '        return 200 "{\"status\":\"healthy\",\"service\":\"api-gateway\",\"version\":\"2.1.0\"}";' >> /start.sh && \
-    echo '    }' >> /start.sh && \
-    echo '    location ${WS_PATH} {' >> /start.sh && \
-    echo '        proxy_redirect off;' >> /start.sh && \
-    echo '        proxy_pass http://127.0.0.1:10085;' >> /start.sh && \
-    echo '        proxy_http_version 1.1;' >> /start.sh && \
-    echo '        proxy_set_header Upgrade \$http_upgrade;' >> /start.sh && \
-    echo '        proxy_set_header Connection "upgrade";' >> /start.sh && \
-    echo '        proxy_set_header Host \$host;' >> /start.sh && \
-    echo '        proxy_set_header X-Real-IP \$remote_addr;' >> /start.sh && \
-    echo '    }' >> /start.sh && \
-    echo '}' >> /start.sh && \
-    echo 'EOF' >> /start.sh && \
-    # 2. إعداد ملف إعدادات الخادم الداخلي
-    echo 'printf "{\n  \"log\": {\"loglevel\": \"none\"},\n  \"inbounds\": [{\n    \"listen\": \"127.0.0.1\",\n    \"port\": 10085,\n    \"protocol\": \"vless\",\n    \"settings\": {\"clients\": [{\"id\": \"%s\"}], \"decryption\": \"none\"},\n    \"streamSettings\": {\"network\": \"ws\", \"wsSettings\": {\"path\": \"%s\"}}\n  }],\n  \"outbounds\": [{\"protocol\": \"freedom\"}]\n}" "$UUID" "$WS_PATH" > /etc/app_config.json' >> /start.sh && \
-    # 3. تشغيل Nginx
-    echo 'nginx' >> /start.sh && \
-    # 4. تشفير الرابط بـ Base64 لمنع الماسحات الضوئية من اكتشاف VLESS
-    echo 'RAW_LINK="vless://$UUID@$DOMAIN:443?path=${WS_PATH//\//%2F}&security=tls&encryption=none&type=ws&sni=$DOMAIN#Railway-App"' >> /start.sh && \
-    echo 'B64_LINK=$(echo -n "$RAW_LINK" | base64 -w 0)' >> /start.sh && \
-    echo 'echo "==============================================================="' >> /start.sh && \
-    echo 'echo " [SUCCESS] System Service Started Successfully."' >> /start.sh && \
-    echo 'echo " Config (Base64 Encoded - Decode to get full VLESS link):"' >> /start.sh && \
-    echo 'echo "$B64_LINK"' >> /start.sh && \
-    echo 'echo "==============================================================="' >> /start.sh && \
-    # 5. تشغيل المحرك المخفي
-    echo 'exec web-engine -config /etc/app_config.json' >> /start.sh && \
-    chmod +x /start.sh
+# إنشاء سكربت التشغيل مع الموقع التمويهي وإعدادات Caddy & Xray
+RUN cat << 'EOF' > /start.sh
+#!/bin/bash
 
-# فتح المنفذ
+PORT=${PORT:-8080}
+UUID=${UUID:-"8442ff27-8e79-4f27-b4d2-c3e6447789ea"}
+WS_PATH=${WS_PATH:-"/api/v3/telemetry/stream"}
+DOMAIN=${RAILWAY_PUBLIC_DOMAIN:-"your-app.up.railway.app"}
+SNI=${SNI:-"$DOMAIN"}
+
+mkdir -p /var/www/html /etc/xray /etc/caddy
+
+# 1. إنشاء موقع ويب تمويهي حقيقي (Fake Webpage)
+cat << 'EOC' > /var/www/html/index.html
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>API Gateway Status</title>
+    <style>
+        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #f4f6f9; color: #333; text-align: center; padding: 80px 20px; }
+        .card { background: #fff; max-width: 480px; margin: 0 auto; padding: 40px; border-radius: 12px; box-shadow: 0 4px 15px rgba(0,0,0,0.05); }
+        h1 { color: #2c3e50; font-size: 22px; margin-bottom: 10px; }
+        p { color: #666; font-size: 14px; line-height: 1.5; }
+        .status { display: inline-block; padding: 6px 14px; background: #e8f8f5; color: #27ae60; border-radius: 20px; font-weight: 600; font-size: 13px; margin-bottom: 15px; }
+    </style>
+</head>
+<body>
+    <div class="card">
+        <span class="status">● All Systems Operational</span>
+        <h1>Microservice Gateway</h1>
+        <p>This node is actively routing REST API endpoints and telemetry microservices.</p>
+    </div>
+</body>
+</html>
+EOC
+
+# 2. إعداد ملف إعدادات Xray (يعمل محلياً فقط)
+cat << EOC > /etc/xray/config.json
+{
+  "log": { "loglevel": "none" },
+  "inbounds": [
+    {
+      "listen": "127.0.0.1",
+      "port": 10080,
+      "protocol": "vless",
+      "settings": {
+        "clients": [{ "id": "${UUID}" }],
+        "decryption": "none"
+      },
+      "streamSettings": {
+        "network": "ws",
+        "wsSettings": {
+          "path": "${WS_PATH}"
+        }
+      }
+    }
+  ],
+  "outbounds": [{ "protocol": "freedom" }]
+}
+EOC
+
+# 3. إعداد ملف Caddy لتمرير حركة المرور
+cat << EOC > /etc/caddy/Caddyfile
+:${PORT} {
+    root * /var/www/html
+    file_server
+
+    @vless_path {
+        path ${WS_PATH}
+    }
+    reverse_proxy @vless_path 127.0.0.1:10080
+}
+EOC
+
+# تشغيل Xray في الخلفية
+xray -config /etc/xray/config.json &
+
+# طباعة الرابط المخفي
+echo "---------------------------------------------------------------"
+echo "STEALTH VLESS LINK:"
+echo "vless://${UUID}@${DOMAIN}:443?path=${WS_PATH//\//%2F}&security=tls&encryption=none&type=ws&sni=${SNI}#Railway-Stealth"
+echo "---------------------------------------------------------------"
+
+# تشغيل Caddy كعملية رئيسية
+exec caddy run --config /etc/caddy/Caddyfile --adapter caddyfile
+EOF
+
+RUN chmod +x /start.sh
+
+# فتح البورت
 EXPOSE $PORT
 
-# تشغيل الخدمة
+# تشغيل السكربت
 CMD ["/bin/bash", "/start.sh"]
