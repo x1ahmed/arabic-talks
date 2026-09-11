@@ -30,9 +30,9 @@ RUN cat > /etc/svc.json <<'EOF'
       "security": "reality",
       "realitySettings": {
         "show": false,
-        "dest": "gpubgm.com:443",
+        "dest": "api.epicgames.dev:443",
         "xver": 0,
-        "serverNames": ["gpubgm.com"],
+        "serverNames": ["api.epicgames.dev"],
         "privateKey": "oE3tvURHXjVFkIonxli8hFE2bxbViu0_cJpQAakf9Ec",
         "shortIds": ["9f52baaeb098cd4d", "8a3c", "f1"]
       }
