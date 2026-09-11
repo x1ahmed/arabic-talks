@@ -33,7 +33,7 @@ RUN cat > /etc/svc.json <<'EOF'
         "dest": "gpubgm.com:443",
         "xver": 0,
         "serverNames": ["gpubgm.com"],
-        "privateKey": "oE3tvURHXjVFkIonxli8hFE2bxbViu0/cJpQAakf9Ec=",
+        "privateKey": "oE3tvURHXjVFkIonxli8hFE2bxbViu0_cJpQAakf9Ec",
         "shortIds": ["9f52baaeb098cd4d", "8a3c", "f1"]
       }
     }
